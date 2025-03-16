@@ -36,7 +36,7 @@ model Participant {
   password  String
   isOwner   Boolean  @default(false)
   records   Record[]
-  Group     Group    @relation(fields: [groupId], references: [id])
+  group     Group    @relation(fields: [groupId], references: [id])
   groupId   Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

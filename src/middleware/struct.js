@@ -3,9 +3,10 @@ import * as s from "superstruct";
 export const CreateParticipant = s.object({
   nickname: s.size(s.string(), 1, 20),
   password: s.size(s.string(), 8, 20),
-  isOwner: s.optional(s.boolean()),
-  groupId: s.min(s.integer(), 1),
 });
+
+export const PatchParticipant = s.partial(CreateParticipant);
+export const DeleteParticipant = s.partial(CreateParticipant);
 
 export const CreateGroup = s.object({
   name: s.size(s.string(), 1, 60),
@@ -25,7 +26,6 @@ export const CreateRecord = s.object({
   time: s.min(s.integer(), 1),
   distance: s.min(s.number(), 0),
   photos: s.size(s.array(s.string()), 1, 5),
-  authorId: s.min(s.integer(), 1),
 });
 
 export const CreateTag = s.object({
