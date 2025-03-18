@@ -23,14 +23,14 @@ router
 
       const total = await prisma.tag.count();
 
-      const formattedTags = tags.map((tag) => ({
+      const formatTagResponse = tags.map((tag) => ({
         id: tag.id,
         name: tag.name,
         createdAt: tag.createdAt.getTime(),
         updatedAt: tag.updatedAt.getTime(),
       }));
 
-      res.status(200).json({ data: formattedTags, total });
+      res.status(200).json({ data: formatTagResponse, total });
     })
   );
 
@@ -45,18 +45,14 @@ router
         where: { id: parseInt(tagId) },
       });
 
-      if (!tag) {
-        return res.status(404).json({ message: "Tag not found" });
-      }
-
-      const response = {
+      const formatTagResponse = {
         id: tag.id,
         name: tag.name,
         createdAt: tag.createdAt.getTime(),
         updatedAt: tag.updatedAt.getTime(),
       };
 
-      res.status(200).json(response);
+      res.status(200).json(formatTagResponse);
     })
   );
 

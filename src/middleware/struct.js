@@ -12,10 +12,10 @@ export const CreateGroup = s.object({
   name: s.size(s.string(), 1, 60),
   description: s.optional(s.string()),
   photoUrl: s.optional(s.string()),
-  goalRep: s.min(s.integer(), 1),
+  //goalRep: s.min(s.integer(), 1),
   discordWebhookUrl: s.optional(s.string()),
   discordInviteUrl: s.optional(s.string()),
-  tags: s.array(s.object({ name: s.string() })),
+  tags: s.array(s.string()),
 });
 
 export const PatchGroup = s.partial(CreateGroup);

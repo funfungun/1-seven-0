@@ -10,6 +10,9 @@ import {
   DeleteParticipant,
   CreateRecord,
 } from "../middleware/struct.js";
+import { formatGroupResponse } from "../utils/formatGroupResponse.js";
+import { getFullGroup } from "../utils/groupUtils.js";
+import axios from "axios";
 
 const prisma = new PrismaClient();
 const router = express.Router();
@@ -28,13 +31,6 @@ router
       } = req.query;
 
       const offset = (parseInt(page) - 1) * parseInt(limit);
-
-      if (!["asc", "desc"].includes(order)) {
-        return res.status(400).send({
-          message:
-            "The order parameter must be one of the following values: ['asc', 'desc'].",
-        });
-      }
 
       if (!["likeCount", "participantCount", "createdAt"].includes(orderBy)) {
         return res.status(400).send({
@@ -74,33 +70,7 @@ router
         },
       });
 
-      const formattedGroups = groups.map((group) => {
-        const owner = group.participants.find((p) => p.isOwner) || null;
-        return {
-          id: group.id,
-          name: group.name,
-          description: group.description,
-          photoUrl: group.photoUrl,
-          goalRep: group.goalRep,
-          discordWebhookUrl: group.discordWebhookUrl,
-          discordInviteUrl: group.discordInviteUrl,
-          likeCount: group.likeCount,
-          tags: group.tags.map((tag) => tag.name),
-          owner: owner
-            ? {
-                id: owner.id,
-                nickname: owner.nickname,
-                createdAt: owner.createdAt.getTime(),
-                updatedAt: owner.updatedAt.getTime(),
-              }
-            : null,
-          participants: group.participants.map(({ isOwner, ...p }) => p),
-          createdAt: group.createdAt.getTime(),
-          updatedAt: group.updatedAt.getTime(),
-          badges: group.badges,
-        };
-      });
-
+      const formattedGroups = groups.map(formatGroupResponse);
       const total = await prisma.group.count({
         where: {
           name: { contains: search, mode: "insensitive" },
@@ -113,43 +83,26 @@ router
   // 그룹 생성 API
   .post(
     asyncHandler(async (req, res) => {
-      const { ownerNickname, ownerPassword, ...groupsData } = req.body;
-      assert(groupsData, CreateGroup);
-      const {
-        name,
-        description,
-        photoUrl,
-        goalRep,
-        discordWebhookUrl,
-        discordInviteUrl,
-        tags,
-      } = groupsData;
+      const { ownerNickname, ownerPassword, goalRep, ...groupData } = req.body;
+      assert(groupData, CreateGroup);
       assert(
         { nickname: ownerNickname, password: ownerPassword },
         CreateParticipant
       );
 
-      const existingParticipant = await prisma.participant.findUnique({
-        where: { nickname: ownerNickname },
-      });
-
-      if (existingParticipant) {
-        return res.status(400).send({ message: "Nickname already taken" });
+      if (!Number.isInteger(goalRep)) {
+        return res.status(400).json({ message: "goalRep must be an integer" });
       }
 
-      const result = await prisma.$transaction(async (tx) => {
-        const group = await tx.group.create({
+      const group = await prisma.$transaction(async (tx) => {
+        const createdGroup = await tx.group.create({
           data: {
-            name,
-            description,
-            photoUrl,
+            ...groupData,
             goalRep,
-            discordWebhookUrl,
-            discordInviteUrl,
             tags: {
-              connectOrCreate: tags.map((tag) => ({
-                where: { name: tag.name },
-                create: { name: tag.name },
+              connectOrCreate: groupData.tags.map((tagName) => ({
+                where: { name: tagName },
+                create: { name: tagName },
               })),
             },
           },
@@ -160,14 +113,16 @@ router
             nickname: ownerNickname,
             password: ownerPassword,
             isOwner: true,
-            groupId: group.id,
+            groupId: createdGroup.id,
           },
         });
 
-        return group;
+        return createdGroup;
       });
 
-      res.status(201).json(result);
+      const fullGroup = await getFullGroup(group.id);
+
+      res.status(201).json(formatGroupResponse(fullGroup));
     })
   );
 
@@ -198,93 +153,45 @@ router
         return res.status(404).json({ message: "Group not found" });
       }
 
-      const owner = group.participants.find((p) => p.isOwner) || null;
-      const response = {
-        id: group.id,
-        name: group.name,
-        description: group.description,
-        photoUrl: group.photoUrl,
-        goalRep: group.goalRep,
-        discordWebhookUrl: group.discordWebhookUrl,
-        discordInviteUrl: group.discordInviteUrl,
-        likeCount: group.likeCount,
-        tags: group.tags.map((t) => t.name),
-        owner: owner
-          ? {
-              id: owner.id,
-              nickname: owner.nickname,
-              createdAt: owner.createdAt.getTime(),
-              updatedAt: owner.updatedAt.getTime(),
-            }
-          : null,
-        participants: group.participants.map((p) => ({
-          id: p.id,
-          nickname: p.nickname,
-          createdAt: p.createdAt.getTime(),
-          updatedAt: p.updatedAt.getTime(),
-        })),
-        createdAt: group.createdAt.getTime(),
-        updatedAt: group.updatedAt.getTime(),
-        badges: group.badges.map((b) => b.type),
-      };
-
-      res.status(200).json(response);
+      res.status(200).json(formatGroupResponse(group));
     })
   )
   // 그룹 수정 API
   .patch(
     asyncHandler(async (req, res) => {
       const { groupId } = req.params;
-      const { ownerNickname, ownerPassword, ...groupData } = req.body;
+      const { ownerNickname, ownerPassword, goalRep, ...groupData } = req.body;
       assert(groupData, PatchGroup);
       assert(
         { nickname: ownerNickname, password: ownerPassword },
         PatchParticipant
       );
-      const {
-        name,
-        description,
-        photoUrl,
-        goalRep,
-        discordWebhookUrl,
-        discordInviteUrl,
-        tags,
-      } = groupData;
 
-      const existingGroup = await prisma.group.findUnique({
-        where: { id: parseInt(groupId) },
-        include: { participants: true },
-      });
-
-      if (!existingGroup) {
-        return res.status(404).json({ message: "Group not found" });
+      if (!Number.isInteger(goalRep)) {
+        return res.status(400).json({ message: "goalRep must be an integer" });
       }
 
-      const owner = existingGroup.participants.find(
-        (participant) => participant.isOwner
-      );
+      await prisma.$transaction(async (tx) => {
+        const existingGroup = await tx.group.findUnique({
+          where: { id: parseInt(groupId) },
+          include: { participants: true },
+        });
+        const owner = existingGroup.participants.find((p) => p.isOwner);
 
-      if (!owner) {
-        return res
-          .status(404)
-          .json({ message: "Owner not found in participants" });
-      }
+        if (owner.password !== ownerPassword) {
+          return res.status(401).json({ message: "Wrong password" });
+        }
 
-      const updatedGroup = await prisma.$transaction(async (tx) => {
-        const group = await tx.group.update({
+        const updatedGroup = await tx.group.update({
           where: { id: parseInt(groupId) },
           data: {
-            name,
-            description,
-            photoUrl,
+            ...groupData,
             goalRep,
-            discordWebhookUrl,
-            discordInviteUrl,
             tags: {
               set: [],
-              connectOrCreate: tags.map((tag) => ({
-                where: { name: tag.name },
-                create: { name: tag.name },
+              connectOrCreate: groupData.tags.map((tagName) => ({
+                where: { name: tagName },
+                create: { name: tagName },
               })),
             },
           },
@@ -298,10 +205,12 @@ router
           },
         });
 
-        return group;
+        return updatedGroup;
       });
 
-      res.status(200).json(updatedGroup);
+      const fullGroup = await getFullGroup(parseInt(groupId));
+
+      res.status(200).json(formatGroupResponse(fullGroup));
     })
   )
   // 그룹 삭제 API
@@ -311,7 +220,7 @@ router
       const { ownerPassword } = req.body;
       const group = await prisma.group.findUnique({
         where: { id: parseInt(groupId) },
-        include: { participants: true },
+        include: { participants: true, tags: true },
       });
 
       if (!group) {
@@ -320,17 +229,27 @@ router
 
       const owner = group.participants.find((p) => p.isOwner);
 
-      if (!owner) {
-        return res
-          .status(404)
-          .json({ message: "Owner not found in participants" });
-      }
-
       if (owner.password !== ownerPassword) {
         return res.status(401).json({ message: "Wrong password" });
       }
 
       await prisma.$transaction(async (tx) => {
+        await tx.group.update({
+          where: { id: group.id },
+          data: {
+            tags: {
+              disconnect: group.tags.map((tag) => ({ id: tag.id })),
+            },
+          },
+        });
+
+        await tx.tag.deleteMany({
+          where: {
+            id: { in: group.tags.map((tag) => tag.id) },
+            groups: { none: { id: group.id } },
+          },
+        });
+
         await tx.participant.deleteMany({
           where: { groupId: group.id },
         });
@@ -340,7 +259,7 @@ router
         });
       });
 
-      res.status(200).json({ message: "Group deleted successfully" });
+      res.status(204).json();
     })
   );
 
@@ -350,26 +269,18 @@ router
   .post(
     asyncHandler(async (req, res) => {
       const { groupId } = req.params;
-      assert(req.body, CreateParticipant);
       const { nickname, password } = req.body;
+
+      if (!nickname) {
+        return res.status(400).json({ message: "nickname is required" });
+      }
+      assert({ nickname, password }, CreateParticipant);
+
       const group = await prisma.group.findUnique({
         where: { id: parseInt(groupId) },
-        include: { participants: true },
       });
 
-      if (!group) {
-        return res.status(404).json({ message: "Group not found" });
-      }
-
-      const existingParticipant = group.participants.find(
-        (p) => p.nickname === nickname
-      );
-
-      if (existingParticipant) {
-        return res.status(400).json({ message: "Already joined the group" });
-      }
-
-      const participant = await prisma.participant.create({
+      await prisma.participant.create({
         data: {
           nickname,
           password,
@@ -377,32 +288,35 @@ router
         },
       });
 
-      res.status(201).json(participant);
+      const updatedGroup = await prisma.group.findUnique({
+        where: { id: parseInt(groupId) },
+        include: { participants: true, tags: true },
+      });
+
+      res.status(201).json(formatGroupResponse(updatedGroup));
     })
   )
   // 그룹 참여 취소 API
   .delete(
     asyncHandler(async (req, res) => {
       const { groupId } = req.params;
-      assert(req.body, DeleteParticipant);
       const { nickname, password } = req.body;
 
+      if (!nickname) {
+        return res.status(400).json({ message: "nickname is required" });
+      }
+      assert({ nickname, password }, DeleteParticipant);
+
       const participant = await prisma.participant.findFirst({
-        where: { groupId: parseInt(groupId), nickname, password },
+        where: { groupId: parseInt(groupId), nickname },
       });
 
-      if (!participant) {
-        return res.status(404).json({ message: "Participant not found" });
-      }
-
-      if (participant.isOwner) {
-        return res
-          .status(400)
-          .json({ message: "Owner cannot leave the group" });
+      if (participant.password !== password) {
+        return res.status(401).json({ message: "Wrong password" });
       }
 
       await prisma.participant.delete({ where: { id: participant.id } });
-      res.status(200).json({ message: "Successfully left the group" });
+      res.status(204).json();
     })
   );
 
@@ -539,17 +453,24 @@ router
         },
       });
 
+      const formatRecordResponse = records.map((record) => ({
+        ...record,
+        exerciseType: record.exerciseType.toLowerCase(),
+      }));
+
       const total = await prisma.record.count({
         where,
       });
 
-      res.send({ data: records, total });
+      res.send({ data: formatRecordResponse, total });
     })
   )
   // 그룹 운동 기록 생성 API
   .post(
     asyncHandler(async (req, res) => {
-      if (isNaN(req.params.groupId)) {
+      const { groupId } = req.params;
+
+      if (isNaN(groupId) || groupId.includes(".")) {
         return res.status(400).json({ message: "groupId must be integer" });
       }
 
@@ -559,7 +480,6 @@ router
 
       const { authorNickname, authorPassword, ...recordData } = req.body;
       assert(recordData, CreateRecord);
-      const { groupId } = req.params;
       const { exerciseType, description, time, distance, photos } = recordData;
 
       const participant = await prisma.participant.findFirst({
@@ -570,12 +490,6 @@ router
         },
         include: { group: true },
       });
-
-      if (!participant) {
-        return res
-          .status(403)
-          .send({ message: "그룹에 등록된 참가자가 아닙니다." });
-      }
 
       const record = await prisma.record.create({
         data: {
@@ -635,6 +549,10 @@ router
     asyncHandler(async (req, res) => {
       const { groupId, recordId } = req.params;
 
+      if (isNaN(groupId) || groupId.includes(".")) {
+        return res.status(400).json({ message: "groupId must be integer" });
+      }
+
       const record = await prisma.record.findUnique({
         where: {
           id: parseInt(recordId),
@@ -655,13 +573,12 @@ router
         },
       });
 
-      if (!record) {
-        return res
-          .status(404)
-          .json({ message: "운동 기록을 찾을 수 없습니다." });
-      }
+      const formatRecordResponse = {
+        ...record,
+        exerciseType: record.exerciseType.toLowerCase(),
+      };
 
-      res.status(200).json(record);
+      res.status(200).json(formatRecordResponse);
     })
   );
 
@@ -672,22 +589,14 @@ router
     asyncHandler(async (req, res) => {
       const { groupId } = req.params;
 
-      const group = await prisma.group.findUnique({
-        where: { id: parseInt(groupId) },
-      });
-
-      if (!group) {
-        return res.status(404).json({ message: "Group not found" });
-      }
-
-      const updatedGroup = await prisma.group.update({
+      await prisma.group.update({
         where: { id: parseInt(groupId) },
         data: {
           likeCount: { increment: 1 },
         },
       });
 
-      res.status(201).json(updatedGroup);
+      res.status(200).json();
     })
   )
   // 그룹 추천 취소 (좋아요 취소)
@@ -695,22 +604,14 @@ router
     asyncHandler(async (req, res) => {
       const { groupId } = req.params;
 
-      const group = await prisma.group.findUnique({
-        where: { id: parseInt(groupId) },
-      });
-
-      if (!group) {
-        return res.status(404).json({ message: "Group not found" });
-      }
-
-      const updatedGroup = await prisma.group.update({
+      await prisma.group.update({
         where: { id: parseInt(groupId) },
         data: {
           likeCount: { decrement: 1 },
         },
       });
 
-      res.status(200).json(updatedGroup);
+      res.status(200).json();
     })
   );
 
